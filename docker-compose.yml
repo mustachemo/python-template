@@ -1,0 +1,173 @@
+version: '3.8'
+
+services:
+  # =============================================================================
+  # Development service: Hot-reload, debugging, development tools
+  # =============================================================================
+  app-dev:
+    build:
+      context: .
+      target: development
+      dockerfile: Dockerfile
+    container_name: project-template-dev
+    volumes:
+      # Mount source code for hot-reload during development
+      - ./src:/app/src:rw
+      - ./tests:/app/tests:rw
+      - ./configs:/app/configs:rw
+      - ./scripts:/app/scripts:rw
+      # Mount logs directory
+      - ./logs:/app/logs:rw
+      # Mount input/output directories
+      - ./input:/app/input:rw
+      - ./output:/app/output:rw
+    environment:
+      - PYTHONPATH=/app/src
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+    ports:
+      - "8000:8000"  # For potential web services
+      - "5678:5678"  # For debugpy remote debugging
+    command: ["python", "-m", "project_template.cli", "--help"]
+    networks:
+      - app-network
+
+  # =============================================================================
+  # Production service: Optimized runtime
+  # =============================================================================
+  app-prod:
+    build:
+      context: .
+      target: production
+      dockerfile: Dockerfile
+    container_name: project-template-prod
+    volumes:
+      # Only mount necessary runtime directories
+      - ./logs:/app/logs:rw
+      - ./input:/app/input:ro
+      - ./output:/app/output:rw
+      - ./configs:/app/configs:ro
+    environment:
+      - PYTHONPATH=/app/src
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=production
+    ports:
+      - "8080:8000"
+    command: ["python", "-m", "project_template.cli", "--help"]
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # =============================================================================
+  # Redis service: For caching and message queuing
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: project-template-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # =============================================================================
+  # PostgreSQL service: For data persistence
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: project-template-postgres
+    environment:
+      POSTGRES_DB: project_template
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/sql:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # =============================================================================
+  # MLflow tracking server: For ML experiment tracking
+  # =============================================================================
+  mlflow:
+    image: python:3.11-slim
+    container_name: project-template-mlflow
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql://postgres:postgres@postgres:5432/mlflow
+      - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    command: >
+      bash -c "
+        pip install mlflow psycopg2-binary &&
+        mlflow server
+          --host 0.0.0.0
+          --port 5000
+          --backend-store-uri postgresql://postgres:postgres@postgres:5432/mlflow
+          --default-artifact-root /mlflow/artifacts
+      "
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # =============================================================================
+  # Jupyter Lab service: For interactive development and experimentation
+  # =============================================================================
+  jupyter:
+    build:
+      context: .
+      target: development
+      dockerfile: Dockerfile
+    container_name: project-template-jupyter
+    environment:
+      - PYTHONPATH=/app/src
+      - JUPYTER_ENABLE_LAB=yes
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./src:/app/src:rw
+      - ./notebooks:/app/notebooks:rw
+      - ./data:/app/data:rw
+      - ./configs:/app/configs:rw
+      - ./logs:/app/logs:rw
+    command: >
+      bash -c "
+        pip install jupyterlab &&
+        jupyter lab
+          --ip=0.0.0.0
+          --port=8888
+          --no-browser
+          --allow-root
+          --NotebookApp.token=''
+          --NotebookApp.password=''
+      "
+    networks:
+      - app-network
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  app-network:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  mlflow_artifacts:
+    driver: local
